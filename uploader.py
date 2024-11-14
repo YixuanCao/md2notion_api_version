@@ -1,4 +1,12 @@
 import re,os,argparse
+import requests
+import os
+import shutil
+import tempfile
+import PIL.Image as Image
+from io import BytesIO
+
+N_IMG = 0
 
 class Md2NotionUploader:
     image_host_object = None
@@ -60,15 +68,22 @@ class Md2NotionUploader:
             elif part.startswith('![') and '](' in part:
                 caption, url = re.match(r'!\[(.*?)\]\((.*?)\)', part).groups()
                 url = self.convert_to_oneline_url(url)
-                result.append({
-                    "image": {
-                        "caption": [],#caption,
-                        "type": "external",
-                        "external": {
-                            "url": url
-                        }##'embed': {'caption': [],'url': url} #<-- for onedrive
-                    }
-                })
+                if url is None:
+                    result.append({
+                        _type: {
+                            "rich_text": self.sentence_parser(part)
+                        }
+                    })
+                else:
+                    result.append({
+                        "image": {
+                            "caption": [caption],#caption,
+                            "type": "external",
+                            "external": {
+                                "url": url
+                            }##'embed': {'caption': [],'url': url} #<-- for onedrive
+                        }
+                    })
             else:
                 result.append({
                     _type: {
@@ -76,13 +91,20 @@ class Md2NotionUploader:
                     }
                 })
 
+        # If no parts were found, return the original string
+        if not result:
+            result.append({
+                _type: {
+                    "rich_text": self.sentence_parser(s)
+                }
+            })
         return result
 
     @staticmethod
     def is_balanced(s):
-        single_dollar_count = s.count('$')
-        double_dollar_count = s.count('$$')
-
+        # 计数 $ 和 $$ 的数量，如果数量是偶数则是平衡的，但是要注意 ` ` 包裹的代码块中的 $ 和 $$ 不应该计数
+        single_dollar_count = re.subn(r'(?<!`)\$', '', s)[1]
+        double_dollar_count = re.subn(r'(?<!`)\$\$', '', s)[1]
         return single_dollar_count % 2 == 0 and double_dollar_count % 2 == 0
 
     @staticmethod
@@ -117,11 +139,34 @@ class Md2NotionUploader:
         
         return annotations, text
 
+    def re_upload_image(self, url):
+        """如果图片在cdnjson上，那么我们需要重新上传"""
+        if 'cdnjson.com' not in url and '':
+            return url
+        # 把 url 中的 : / 都替换成 _
+        possible_name = url.replace(':','_').replace('/','_')
+        possible_file = os.path.join(r'C:\Users\caoyi\Documents\myBook\img', possible_name)
+        if os.path.exists(possible_file):
+            return self.convert_to_oneline_url_smms(possible_file)
+
+        # download the image into temp folder
+        response = requests.get(url, timeout=30)
+        img = Image.open(BytesIO(response.content))
+        temp_dir = tempfile.mkdtemp()
+        temp_file = os.path.join(temp_dir, 'temp.png')
+        img.save(temp_file)
+        global N_IMG
+        N_IMG += 1
+        print(f"smms {N_IMG} images")
+        if N_IMG > 200:
+            raise "Too many images"
+        return self.convert_to_oneline_url_smms(temp_file)
     
     def convert_to_oneline_url(self,url):
         # check the url is local. (We assume it in Onedrive File)
         
-        if "http" in url:return url
+        if "http" in url:
+            return self.re_upload_image(url)
         if (".png" not in url) and (".jpg" not in url) and (".svg" not in url):return url
         ## we will locate the Onedrive image 
         if self.image_host == 'onedrive':
@@ -152,8 +197,20 @@ class Md2NotionUploader:
         return smms.url
     
     def sentence_parser(self, s):
+        def simple_block(text, ann):
+            return {
+                "type": "text",
+                "text": {
+                    "content": text,
+                    "link": None
+                },
+                "annotations": ann,
+                "plain_text": text,
+                "href": None
+            }
         if not self.is_balanced(s):
-            raise ValueError("Unbalanced math delimiters in the input string.")
+            print(f'this input is not balanced {s}')
+            # raise ValueError("Unbalanced math delimiters in the input string.")
 
         # Split string by inline math and markdown links
         parts = re.split(r'(\$.*?\$|\[.*?\]\(.*?\))', s)
@@ -170,35 +227,20 @@ class Md2NotionUploader:
                 })
             elif part.startswith('[') and '](' in part:
                 # Process style delimiters before processing link
-                style_parts = re.split(r'(\*\*.*?\*\*|__.*?__|\*.*?\*|_.*?_|~~.*?~~|`.*?`)', part)
-                for style_part in style_parts:
-                    annotations, clean_text = self.parse_annotations(style_part)
-                    if clean_text.startswith('[') and '](' in clean_text:
-                        link_text, url = re.match(r'\[(.*?)\]\((.*?)\)', clean_text).groups()
-                        
-                        result.append({
-                            "type": "text",
-                            "text": {
-                                "content": link_text,
-                                "link": {
-                                    "url": url
-                                }
-                            },
-                            "annotations": annotations,
-                            "plain_text": link_text,
-                            "href": url
-                        })
-                    elif clean_text:
-                        result.append({
-                            "type": "text",
-                            "text": {
-                                "content": clean_text,
-                                "link": None
-                            },
-                            "annotations": annotations,
-                            "plain_text": clean_text,
-                            "href": None
-                        })
+                caption, url = re.match(r'\[(.*?)\]\((.*?)\)', part).groups()
+                url_ann = {'bold': False, 'italic': False, 'strikethrough': False, 'underline': False, 'code': False, 'color': 'default'}
+                result.append({
+                    "type": "text",
+                    "text": {
+                        "content": caption,
+                        "link": {
+                            "url": url
+                        }
+                    },
+                    "annotations": url_ann,
+                    "plain_text": caption,
+                    "href": url
+                })
             else:
                 # Split text by style delimiters
                 style_parts = re.split(r'(\*\*.*?\*\*|__.*?__|\*.*?\*|_.*?_|~~.*?~~|`.*?`)', part)
@@ -306,6 +348,52 @@ class Md2NotionUploader:
             for childBlock in blockChildren:
                 ### firstly create one than 
                 self.uploadBlock(childBlock, notion, child_id, mdFilePath, imagePathFunc)
+
+    def uploadBlocks(self,blockDescriptors, notion, page_id, mdFilePath=None, imagePathFunc=None):
+        """
+        Uploads a single blockDescriptor for NotionPyRenderer as the child of another block
+        and does any post processing for Markdown importing
+        @param {dict} blockDescriptor A block descriptor, output from NotionPyRenderer
+        @param {NotionBlock} blockParent The parent to add it as a child of
+        @param {string} mdFilePath The path to the markdown file to find images with
+        @param {callable|None) [imagePathFunc=None] See upload()
+
+        @todo Make mdFilePath optional and don't do searching if not provided
+        """
+        new_name_map = {
+            'text':'paragraph',
+            'bulleted_list':'bulleted_list_item',
+            'header':'heading_1',
+            'sub_header':'heading_2',
+            'sub_sub_header':'heading_3',
+            'numbered_list':'numbered_list_item'
+        }
+        blocks = []
+        for blockDescriptor in blockDescriptors:
+            assert not blockDescriptor.get('children',None)
+            old_name = blockDescriptor['type']._type
+            new_name = new_name_map[old_name] if old_name in new_name_map else old_name
+            
+            if new_name == 'collection_view':
+                # this is a table
+                content_block = self.convert_table(blockDescriptor)
+            elif new_name == 'image':
+                # this is a table
+                content_block = self.convert_image(blockDescriptor)
+            elif 'title' in blockDescriptor:
+                content = blockDescriptor['title']
+                content_block = self.blockparser(content,new_name)
+            elif new_name == 'code':
+                language = blockDescriptor['language']
+                content = blockDescriptor['title_plaintext']
+                content_block = self.blockparser(content,new_name)
+                content_block[0]['code']['language'] = language.lower()
+            else:
+                content_block = [{new_name:{}}]
+            blocks.extend(content_block)
+        response      = notion.blocks.children.append(block_id=page_id, children=blocks)
+        
+
 
 if __name__ == '__main__':
     # get your smms token from  https://sm.ms/home 

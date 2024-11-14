@@ -1,7 +1,19 @@
+import re
 from mistletoe.block_token import BlockToken, tokenize
 import itertools
 from mistletoe import span_token
 from md2notion.NotionPyRenderer import NotionPyRenderer
+
+def double_dollar_to_single_dollar(text):
+    """
+    如果 text 中存在 成对的 $$ xx $$ ，则将其转换为 $ xx $
+    注意如果 $$ 前面有 ` 则不转换
+    """
+    def repl(match):
+        return match.group(0).replace('$$', '$')
+    return re.sub(r'(?<!`)\$\$.+?\$\$', repl, text, flags=re.DOTALL)
+    # return re.sub(r'\$\$.+?\$\$', repl, text, flags=re.DOTALL)
+
 
 class Document(BlockToken):
     """
@@ -9,7 +21,7 @@ class Document(BlockToken):
     """
     def __init__(self, lines):
         if isinstance(lines, str):lines = lines.splitlines(keepends=True)
-        lines = [line if line.endswith('\n') else '{}\n'.format(line) for line in lines]
+        lines = [double_dollar_to_single_dollar(line) if line.endswith('\n') else '{}\n'.format(line) for line in lines]
 
         # add new line above and below '$$\n'
         new_lines = []
@@ -17,7 +29,10 @@ class Document(BlockToken):
         triggered = False
         for line in lines:
             #if line.strip().replace('\n',"") =='':continue
-            if not triggered and '$$\n' in line:
+            if line.strip().startswith('$$') and line.strip().endswith('$$') and len(line.strip())>3:
+                # 有些情况下 $$ $$ 会在一行里结束
+                new_lines.append([None, line, None])
+            elif not triggered and '$$\n' in line:
                 temp_line = [None, line, None]
                 triggered = True
             elif triggered:
