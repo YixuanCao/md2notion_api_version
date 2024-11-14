@@ -224,6 +224,30 @@ class PagesEndpoint(Endpoint):
             body=pick(kwargs, "archived", "properties", "icon", "cover"),
             auth=kwargs.get("auth"),
         )
+    
+    def children(self, page_id: str, page_size=100):
+        """
+        https://developers.notion.com/reference/get-block-children
+        """
+        all_results = []
+        resp = self.parent.request(
+            path=f"blocks/{page_id}/children?page_size={page_size}",
+            method="GET",
+            auth=None,
+        )
+        all_results.extend(resp.get('results', []))
+        # max return 100 children at one time
+        while resp.get('has_more', False):
+            resp = self.parent.request(
+                path=f"blocks/{page_id}/children?page_size={page_size}&start_cursor={resp['next_cursor']}",
+                method="GET",
+                auth=None,
+            )
+            all_results.extend(resp.get('results', []))
+        resp['results'] = all_results
+        return resp
+
+
 
 
 class UsersEndpoint(Endpoint):
